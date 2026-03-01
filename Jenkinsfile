@@ -17,9 +17,7 @@ pipeline {
         HELM_VALUES_FILE = 'kubecoin/values.yaml'
     }
 
-    triggers {
-        githubPush()
-    }
+    triggers { pollSCM('H/2 * * * *') }
 
     stages {
         stage('Build and Push Image') {
