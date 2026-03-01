@@ -4,7 +4,7 @@ pipeline {
     environment {
         DOCKER_CREDENTIALS = 'docker-creds'
         GIT_CREDENTIALS = 'git-creds'
-        DOCKER_REGISTRY = 'your-private-registry.example.com'
+        DOCKER_REGISTRY = 'privatergistry'
 
         IMAGE_NAME = 'kubecoin-frontend'
         IMAGE_REPOSITORY = "${DOCKER_REGISTRY}/${IMAGE_NAME}"
@@ -17,9 +17,7 @@ pipeline {
         HELM_VALUES_FILE = 'kubecoin/values.yaml'
     }
 
-    triggers {
-        githubPush()
-    }
+    triggers { pollSCM('H/2 * * * *') }
 
     stages {
         stage('Build and Push Image') {
