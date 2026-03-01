@@ -1,5 +1,5 @@
 pipeline {
-    agent { label 'docker-host' }
+    agent any
 
     environment {
         DOCKER_CREDENTIALS = 'docker-creds'
@@ -22,36 +22,55 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Build Image') {
-            steps {
-                sh 'docker build -t ${IMAGE_FULL} -t ${IMAGE_LATEST} .'
-            }
-        }
-
-        stage('Login to Registry') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: DOCKER_CREDENTIALS,
-                    usernameVariable: 'DOCKER_USERNAME',
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )]) {
-                    sh 'echo "$DOCKER_PASSWORD" | docker login ${DOCKER_REGISTRY} -u "$DOCKER_USERNAME" --password-stdin'
+        stage('Build and Push Image') {
+            agent {
+                kubernetes {
+                    cloud 'kubernetes'
+                    yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: jenkins
+spec:
+  serviceAccountName: jenkins
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    command:
+    - /busybox/cat
+    tty: true
+'''
                 }
             }
-        }
 
-        stage('Push Images') {
             steps {
-                sh '''
-                    docker push ${IMAGE_FULL}
-                    docker push ${IMAGE_LATEST}
-                '''
+                checkout scm
+
+                container('kaniko') {
+                    withCredentials([usernamePassword(
+                        credentialsId: DOCKER_CREDENTIALS,
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )]) {
+                        sh '''
+                            set -e
+
+                            AUTH=$(echo -n "${DOCKER_USERNAME}:${DOCKER_PASSWORD}" | base64 | tr -d '\n')
+                            mkdir -p /kaniko/.docker
+                            cat > /kaniko/.docker/config.json <<EOF
+{"auths":{"${DOCKER_REGISTRY}":{"auth":"${AUTH}"}}}
+EOF
+
+                            /kaniko/executor \
+                              --context "${WORKSPACE}" \
+                              --dockerfile "${WORKSPACE}/Dockerfile" \
+                              --destination "${IMAGE_FULL}" \
+                              --destination "${IMAGE_LATEST}" \
+                              --insecure \
+                              --skip-tls-verify
+                        '''
+                    }
+                }
             }
         }
 
@@ -69,8 +88,8 @@ pipeline {
                         CLEAN_HELM_URL=${HELM_REPO_URL#https://}
                         git clone -b ${HELM_BRANCH} https://${GIT_USERNAME}:${GIT_PASSWORD}@${CLEAN_HELM_URL} helm-repo
 
-                        sed -i '/^frontend:/,/^[^ ]/ s|^\(    repository: \).*|\1'"${IMAGE_REPOSITORY}"'|' helm-repo/${HELM_VALUES_FILE}
-                        sed -i '/^frontend:/,/^[^ ]/ s|^\(    tag: \).*|\1"'"${IMAGE_TAG}"'"|' helm-repo/${HELM_VALUES_FILE}
+                        sed -i "/^frontend:/,/^[^ ]/ s|^    repository: .*|    repository: ${IMAGE_REPOSITORY}|" helm-repo/${HELM_VALUES_FILE}
+                        sed -i "/^frontend:/,/^[^ ]/ s|^    tag: .*|    tag: \"${IMAGE_TAG}\"|" helm-repo/${HELM_VALUES_FILE}
 
                         cd helm-repo
                         git config user.name "jenkins"
@@ -92,7 +111,6 @@ pipeline {
 
     post {
         always {
-            sh 'docker logout ${DOCKER_REGISTRY} || true'
             sh 'rm -rf helm-repo || true'
         }
     }
